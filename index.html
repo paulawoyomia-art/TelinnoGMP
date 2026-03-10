@@ -1,0 +1,703 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Telinno GMP — My Programme Schedule</title>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=DM+Sans:wght@300;400;500;600;700&family=DM+Mono:wght@300;400;500&display=swap" rel="stylesheet">
+
+<script type="module">
+import { initializeApp }
+  from "https://www.gstatic.com/firebasejs/12.10.0/firebase-app.js";
+import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged }
+  from "https://www.gstatic.com/firebasejs/12.10.0/firebase-auth.js";
+import { getFirestore, doc, setDoc, onSnapshot }
+  from "https://www.gstatic.com/firebasejs/12.10.0/firebase-firestore.js";
+
+const firebaseConfig = {
+  apiKey:            "AIzaSyA33K57poDBb_avpiZofEetwmVfjZl5TIE",
+  authDomain:        "telinnogmp.firebaseapp.com",
+  projectId:         "telinnogmp",
+  storageBucket:     "telinnogmp.firebasestorage.app",
+  messagingSenderId: "462011583361",
+  appId:             "1:462011583361:web:a37469e4ff4466eb3b7680",
+  measurementId:     "G-4SYMHDPFLG"
+};
+
+/* Email → grad ID map */
+const EMAIL_MAP = {
+  "awoyomi.akintomiwa@telinnoconsulting.com": "akintomiwa",
+  "ahmed.olaitan@telinnoconsulting.com":      "ahmed",
+  "samuel.mauyon@telinnoconsulting.com":      "samuel",
+  "adegboye.adeola@telinnoconsulting.com":    "adegboye",
+  "ebubechukwu.peace@telinnoconsulting.com":  "ebube",
+  "salim.yunus@telinnoconsulting.com":        "yunus"
+};
+
+const app  = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db   = getFirestore(app);
+
+let _gradId      = null;
+let _ticks       = {};
+let _unsubscribe = null;
+
+/* ── Auth state ───────────────────────────────────────────── */
+onAuthStateChanged(auth, user => {
+  if (user) {
+    const gid = EMAIL_MAP[user.email];
+    if (!gid) { signOut(auth); showLogin("This email isn't registered in the programme."); return; }
+    _gradId = gid;
+    showApp(gid, user.email);
+    listenFirestore(gid);
+  } else {
+    if (_unsubscribe) { _unsubscribe(); _unsubscribe = null; }
+    _gradId = null; _ticks = {};
+    showLogin();
+  }
+});
+
+/* ── Login / logout ───────────────────────────────────────── */
+window.doLogin = async () => {
+  const email = document.getElementById('iEmail').value.trim();
+  const pass  = document.getElementById('iPass').value;
+  const errEl = document.getElementById('lErr');
+  const btn   = document.getElementById('lBtn');
+  errEl.textContent = ''; btn.disabled = true; btn.textContent = 'Signing in…';
+  try {
+    await signInWithEmailAndPassword(auth, email, pass);
+  } catch(e) {
+    const m = {
+      'auth/invalid-credential':  'Incorrect email or password.',
+      'auth/user-not-found':      'No account found for this email.',
+      'auth/wrong-password':      'Incorrect password.',
+      'auth/too-many-requests':   'Too many attempts — try again later.',
+      'auth/invalid-email':       'Please enter a valid email address.'
+    };
+    errEl.textContent = m[e.code] || 'Sign-in failed. Please try again.';
+    btn.disabled = false; btn.textContent = 'Sign In';
+  }
+};
+window.doLogout = () => signOut(auth);
+
+/* ── Firestore real-time sync ─────────────────────────────── */
+function listenFirestore(gid) {
+  if (_unsubscribe) _unsubscribe();
+  _unsubscribe = onSnapshot(doc(db, 'progress', gid), snap => {
+    const remote = snap.exists() ? (snap.data().ticks || {}) : {};
+    if (JSON.stringify(remote) !== JSON.stringify(_ticks)) {
+      _ticks = remote;
+      applyAllTicks();
+      refreshProgress();
+    }
+  });
+}
+
+async function saveTicks() {
+  if (!_gradId) return;
+  try { await setDoc(doc(db, 'progress', _gradId), { ticks: _ticks }, { merge: true }); }
+  catch(e) { console.warn('Save failed', e); }
+}
+
+/* ── Toggle handlers ──────────────────────────────────────── */
+window.tick = (id, el) => {
+  _ticks[id] = !_ticks[id];
+  applyTick(el, _ticks[id]);
+  if (_ticks[id]) { el.classList.add('_pop'); setTimeout(() => el.classList.remove('_pop'), 400); }
+  refreshProgress();
+  saveTicks();
+};
+
+window.tickSess = (id, card) => {
+  if (!card.classList.contains('_open') && !_ticks[id]) { card.classList.add('_open'); return; }
+  card.classList.remove('_open');
+  _ticks[id] = !_ticks[id];
+  applyTick(card, _ticks[id]);
+  if (_ticks[id]) { card.classList.add('_pop'); setTimeout(() => card.classList.remove('_pop'), 400); }
+  refreshProgress();
+  saveTicks();
+};
+
+window.doReset = () => {
+  const g = GRADS.find(x => x.id === _gradId);
+  if (!g || !confirm(`Reset all your progress, ${g.name.split(' ')[0]}?`)) return;
+  _ticks = {}; applyAllTicks(); refreshProgress(); saveTicks();
+};
+
+function applyTick(el, on) {
+  el.classList.toggle('done', on);
+  const tags = el.querySelector('.rot-tags');
+  if (tags) {
+    const dt = tags.querySelector('.done-tag');
+    if (on && !dt) { const s = document.createElement('span'); s.className = 'rtag done-tag'; s.textContent = '✓ Done'; tags.appendChild(s); }
+    if (!on && dt) dt.remove();
+  }
+}
+
+function applyAllTicks() {
+  document.querySelectorAll('[data-tid]').forEach(el => applyTick(el, !!_ticks[el.dataset.tid]));
+}
+
+/* ── Progress ─────────────────────────────────────────────── */
+function totalItems(g) { return P1.length + g.p2.length + g.p3.length + FRI.length + CAP.length; }
+function doneCount(g) {
+  let n = 0;
+  P1.forEach(s  => _ticks[s.id]      && n++);
+  g.p2.forEach((_,i) => _ticks[`p2_${i}`] && n++);
+  g.p3.forEach((_,i) => _ticks[`p3_${i}`] && n++);
+  FRI.forEach(f  => _ticks[f.id]      && n++);
+  CAP.forEach(c  => _ticks[c.id]      && n++);
+  return n;
+}
+
+window.refreshProgress = () => {
+  const g = GRADS.find(x => x.id === _gradId); if (!g) return;
+  const tot = totalItems(g), dn = doneCount(g), pct = tot ? Math.round(dn / tot * 100) : 0;
+  _s('fpLabel', `<strong>${dn}</strong> of ${tot} done`);
+  const fill = document.getElementById('fpFill'); if (fill) fill.style.width = pct + '%';
+  const pill = document.getElementById('hPill');  if (pill) pill.textContent = pct + '% complete';
+  const R = 38, C = 2 * Math.PI * R;
+  const rc = document.querySelector('.rtrack'); if (rc) rc.style.strokeDashoffset = (C - (pct / 100) * C).toFixed(2);
+  const rl = document.querySelector('.rlabel'); if (rl) rl.textContent = pct + '%';
+  _s('tp1', `${P1.filter(s => _ticks[s.id]).length}/${P1.length}`);
+  _s('tp2', `${g.p2.filter((_,i) => _ticks[`p2_${i}`]).length}/${g.p2.length}`);
+  _s('tp3', `${g.p3.filter((_,i) => _ticks[`p3_${i}`]).length}/${g.p3.length}`);
+  _s('tfr', `${FRI.filter(f => _ticks[f.id]).length}/${FRI.length}`);
+  _s('tc4', `${CAP.filter(c => _ticks[c.id]).length}/${CAP.length}`);
+};
+function _s(id, v) { const e = document.getElementById(id); if (e) e.innerHTML = v; }
+
+/* ════════════════════════════════════════════════════════════
+   DATA
+════════════════════════════════════════════════════════════ */
+const GRADS = [
+  { id:'ebube',      name:'Ebubechukwu Peace',  track:'Procurement',        kad:'KAD 4',
+    p2:[{r:'R1',wk:'Wk 5–6', d:'16–27 Mar',    dept:'Finance',            kad:'KAD 1'},
+        {r:'R2',wk:'Wk 7–8', d:'30 Mar–10 Apr',dept:'Project Management', kad:'KAD 3'},
+        {r:'R3',wk:'Wk 9–10',d:'13–24 Apr',    dept:'Sales/Commercial',   kad:'KAD 2'}],
+    p3:[{r:'R1',wk:'Wk 11–12',d:'27 Apr–9 May', kad:'KAD 1'},
+        {r:'R2',wk:'Wk 13–14',d:'12–23 May',    kad:'KAD 2'},
+        {r:'R3',wk:'Wk 15–16',d:'26 May–6 Jun', kad:'KAD 3'},
+        {r:'R4',wk:'Wk 17–18',d:'9–20 Jun',     kad:'KAD 4'}] },
+  { id:'yunus',      name:'Salim Yunus',         track:'Sales/Commercial',   kad:'KAD 4',
+    p2:[{r:'R1',wk:'Wk 5–6', d:'16–27 Mar',    dept:'Finance',            kad:'KAD 2'},
+        {r:'R2',wk:'Wk 7–8', d:'30 Mar–10 Apr',dept:'Procurement',        kad:'KAD 1'},
+        {r:'R3',wk:'Wk 9–10',d:'13–24 Apr',    dept:'Project Management', kad:'KAD 3'}],
+    p3:[{r:'R1',wk:'Wk 11–12',d:'27 Apr–9 May', kad:'KAD 2'},
+        {r:'R2',wk:'Wk 13–14',d:'12–23 May',    kad:'KAD 3'},
+        {r:'R3',wk:'Wk 15–16',d:'26 May–6 Jun', kad:'KAD 4'},
+        {r:'R4',wk:'Wk 17–18',d:'9–20 Jun',     kad:'KAD 1'}] },
+  { id:'adegboye',   name:'Adegboye Adeola',     track:'Sales/Commercial',   kad:'KAD 2',
+    p2:[{r:'R1',wk:'Wk 5–6', d:'16–27 Mar',    dept:'Project Management', kad:'KAD 4'},
+        {r:'R2',wk:'Wk 7–8', d:'30 Mar–10 Apr',dept:'Finance',            kad:'KAD 1'},
+        {r:'R3',wk:'Wk 9–10',d:'13–24 Apr',    dept:'Procurement',        kad:'KAD 3'}],
+    p3:[{r:'R1',wk:'Wk 11–12',d:'27 Apr–9 May', kad:'KAD 3'},
+        {r:'R2',wk:'Wk 13–14',d:'12–23 May',    kad:'KAD 4'},
+        {r:'R3',wk:'Wk 15–16',d:'26 May–6 Jun', kad:'KAD 1'},
+        {r:'R4',wk:'Wk 17–18',d:'9–20 Jun',     kad:'KAD 2'}] },
+  { id:'akintomiwa', name:'Akintomiwa Awoyomi',  track:'HR',                 kad:'KAD 3',
+    p2:[{r:'R1',wk:'Wk 5–6', d:'16–27 Mar',    dept:'Sales/Commercial',   kad:'KAD 1'},
+        {r:'R2',wk:'Wk 7–8', d:'30 Mar–10 Apr',dept:'Finance',            kad:'KAD 4'},
+        {r:'R3',wk:'Wk 9–10',d:'13–24 Apr',    dept:'Project Management', kad:'KAD 2'}],
+    p3:[{r:'R1',wk:'Wk 11–12',d:'27 Apr–9 May', kad:'KAD 4'},
+        {r:'R2',wk:'Wk 13–14',d:'12–23 May',    kad:'KAD 1'},
+        {r:'R3',wk:'Wk 15–16',d:'26 May–6 Jun', kad:'KAD 2'},
+        {r:'R4',wk:'Wk 17–18',d:'9–20 Jun',     kad:'KAD 3'}] },
+  { id:'ahmed',      name:'Ahmed Olaitan',       track:'Project Management', kad:'KAD 1',
+    p2:[{r:'R1',wk:'Wk 5–6', d:'16–27 Mar',    dept:'Procurement',        kad:'KAD 3'},
+        {r:'R2',wk:'Wk 7–8', d:'30 Mar–10 Apr',dept:'Sales/Commercial',   kad:'KAD 4'},
+        {r:'R3',wk:'Wk 9–10',d:'13–24 Apr',    dept:'Finance',            kad:'KAD 2'}],
+    p3:[{r:'R1',wk:'Wk 11–12',d:'27 Apr–9 May', kad:'KAD 1'},
+        {r:'R2',wk:'Wk 13–14',d:'12–23 May',    kad:'KAD 3'},
+        {r:'R3',wk:'Wk 15–16',d:'26 May–6 Jun', kad:'KAD 2'},
+        {r:'R4',wk:'Wk 17–18',d:'9–20 Jun',     kad:'KAD 4'}] },
+  { id:'samuel',     name:'Samuel Mauyon',       track:'Project Management', kad:'KAD 2',
+    p2:[{r:'R1',wk:'Wk 5–6', d:'16–27 Mar',    dept:'Sales/Commercial',   kad:'KAD 3'},
+        {r:'R2',wk:'Wk 7–8', d:'30 Mar–10 Apr',dept:'Procurement',        kad:'KAD 1'},
+        {r:'R3',wk:'Wk 9–10',d:'13–24 Apr',    dept:'Finance',            kad:'KAD 4'}],
+    p3:[{r:'R1',wk:'Wk 11–12',d:'27 Apr–9 May', kad:'KAD 2'},
+        {r:'R2',wk:'Wk 13–14',d:'12–23 May',    kad:'KAD 4'},
+        {r:'R3',wk:'Wk 15–16',d:'26 May–6 Jun', kad:'KAD 3'},
+        {r:'R4',wk:'Wk 17–18',d:'9–20 Jun',     kad:'KAD 1'}] },
+];
+window.GRADS = GRADS;
+
+const P1 = [
+  { id:'s1', badge:'Session 1 · 2 hrs', date:'Tue 10 March 2026',
+    title:'Telinno DNA & Telecoms Industry Overview',
+    topics:[
+      {b:'Company history, mission & values',   n:'Emphasised'},
+      {b:'Competitive landscape',               n:'Emphasised'},
+      {b:'Service offerings & client portfolio',n:'Emphasised'},
+      {n:'Organisational structure & key stakeholders'},
+      {n:'Telecom infrastructure & technologies (2G–5G)'},
+      {n:'Network planning & optimisation concepts'},
+      {n:'Regulatory environment in West Africa'},
+      {n:'Industry trends & digital transformation'}]},
+  { id:'s2', badge:'Session 2 · 2 hrs', date:'Wed 11 March 2026',
+    title:'Business Operations at Telinno',
+    topics:[
+      {b:'Sales cycle & commercial process',n:'Emphasised'},
+      {n:'Project lifecycle & delivery methodology'},
+      {n:'Quality assurance & client management'},
+      {b:'Financial management & reporting',n:'Emphasised'}]},
+  { id:'s3', badge:'Session 3 · 2 hrs', date:'Thu 12 March 2026',
+    title:'Digital Tools & Systems — Geniee ERP',
+    topics:[
+      {b:'Geniee ERP — full platform walkthrough',n:'procurement, finance, HR, project tracking, reporting'},
+      {n:'Email & calendar management'}]},
+  { id:'s4', badge:'Feedback Session', date:'Fri 13 March 2026',
+    title:'Open Review & Q&A',
+    topics:[
+      {n:'Reflect on Sessions 1–3'},
+      {n:'Q&A with facilitator'},
+      {n:'Preparation briefing for Phase 2 rotations'}]},
+];
+
+const FRI = [
+  {id:'f5', wk:'Wk 5', d:'Fri 20 Mar', t:'Advanced Excel — Data Analysis & Visualisation'},
+  {id:'f6', wk:'Wk 6', d:'Fri 27 Mar', t:'Business Writing & Professional Documentation'},
+  {id:'f7', wk:'Wk 7', d:'Fri 3 Apr',  t:'Stakeholder Communication & Influence'},
+  {id:'f8', wk:'Wk 8', d:'Fri 10 Apr', t:'Project Planning & Execution Basics'},
+  {id:'f9', wk:'Wk 9', d:'Fri 17 Apr', t:'Financial Literacy for Non-Finance Professionals'},
+  {id:'f10',wk:'Wk 10',d:'Fri 24 Apr', t:'Quality Management & Process Improvement'},
+  {id:'f11',wk:'Wk 11',d:'Fri 1 May',  t:'Customer Success & Relationship Management'},
+  {id:'f12',wk:'Wk 12',d:'Fri 8 May',  t:'Time Management & Personal Productivity'},
+  {id:'f13',wk:'Wk 13',d:'Fri 15 May', t:'Presentation Skills & Executive Presence'},
+  {id:'f14',wk:'Wk 14',d:'Fri 22 May', t:'Meeting Facilitation & Documentation'},
+  {id:'f15',wk:'Wk 15',d:'Fri 29 May', t:'PowerPoint & Word for Business'},
+  {id:'f16',wk:'Wk 16',d:'Fri 5 Jun',  t:'Structured Problem-Solving Frameworks'},
+  {id:'f17',wk:'Wk 17',d:'Fri 12 Jun', t:'Data Analysis & Root Cause Analysis'},
+  {id:'f18',wk:'Wk 18',d:'Fri 19 Jun', t:'Business Case Development'},
+];
+
+const CAP = [
+  {id:'c19',wk:'Week 19',d:'22–26 Jun 2026',   title:'Scoping & Planning',
+   tasks:['Problem definition & scope','Stakeholder interviews','Data collection plan','Project charter approval']},
+  {id:'c20',wk:'Week 20',d:'29 Jun–3 Jul 2026', title:'Analysis & Solution Design',
+   tasks:['Data gathering & analysis','Root cause identification','Solution alternatives','Feasibility assessment']},
+  {id:'c21',wk:'Week 21',d:'6–10 Jul 2026',    title:'Implementation Planning',
+   tasks:['Implementation roadmap','Resource requirements','Risk mitigation','Success metrics definition']},
+  {id:'c22',wk:'Week 22',d:'13–17 Jul 2026',   title:'Finalisation & Presentation',
+   tasks:['Final report','Presentation preparation','Executive presentation to Steering Committee','Q&A session']},
+];
+
+const REQS = [
+  {i:'📋',t:'Report to assigned supervisor on <b>Day 1</b> of each rotation'},
+  {i:'📓',t:'Submit <b>weekly reflection journal</b> every Friday afternoon'},
+  {i:'✍️',t:'Complete <b>rotation sign-off form</b> at end of each 2-week period'},
+  {i:'🎓',t:'Attend <b>Friday learning sessions</b> regardless of rotation location'},
+  {i:'🗂️',t:'Maintain a <b>portfolio of work samples</b> from each rotation'},
+  {i:'📊',t:'Submit <b>monthly self-assessment</b> in Week 1 of each month'},
+];
+
+const PC = {p1:'#C84B1F',p2:'#1A4A8B',p3:'#1A7A4C',p4:'#6B3A8B',fr:'#8B6A1A'};
+const CHK = `<svg width="11" height="11" viewBox="0 0 11 11" fill="none"><polyline points="1.5,5.5 4.5,8.5 9.5,2.5" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+
+/* ── Show screens ─────────────────────────────────────────── */
+function showLogin(err) {
+  document.getElementById('SL').style.display = 'flex';
+  document.getElementById('SA').style.display = 'none';
+  if (err) document.getElementById('lErr').textContent = err;
+  setTimeout(() => {
+    const p = document.getElementById('iPass');
+    const e = document.getElementById('iEmail');
+    if (p) p.onkeydown = ev => { if (ev.key === 'Enter') window.doLogin(); };
+    if (e) e.onkeydown = ev => { if (ev.key === 'Enter') p && p.focus(); };
+  }, 60);
+}
+
+function showApp(gid, email) {
+  document.getElementById('SL').style.display = 'none';
+  document.getElementById('SA').style.display = 'block';
+  document.getElementById('SA').innerHTML = buildDashboard(gid, email);
+  applyAllTicks();
+  window.refreshProgress();
+}
+
+/* ── Phase header ─────────────────────────────────────────── */
+function phHd(col, label, dates, tid) {
+  return `<div class="ph">
+    <div class="pp" style="background:${col}"></div>
+    <div class="pl">${label}</div>
+    <div class="pd">${dates}</div>
+    <div class="pr"></div>
+    <div class="pt" id="${tid}">—</div>
+  </div>`;
+}
+
+/* ── Build dashboard ──────────────────────────────────────── */
+function buildDashboard(gid, email) {
+  const g = GRADS.find(x => x.id === gid);
+  const [fn, ...rest] = g.name.split(' ');
+  const R = 38, C = (2 * Math.PI * R).toFixed(2);
+
+  let h = `
+  <header class="topbar"><div class="tbi">
+    <div class="brand">
+      <div class="bn">Teli<em>nno</em> GMP</div>
+      <div class="bs">Programme Tracker · 2026</div>
+    </div>
+    <div class="tr2">
+      <div class="ppill" id="hPill">0% complete</div>
+      <button class="lout" onclick="doLogout()">Sign out</button>
+    </div>
+  </div></header>
+
+  <div class="main">
+    <div class="hero">
+      <div>
+        <div class="hname">${fn} <em>${rest.join(' ')}</em></div>
+        <div class="hpills">
+          <span class="hp trk">${g.track}</span>
+          <span class="hp kad">Home · ${g.kad}</span>
+          <span class="hp eml">${email}</span>
+        </div>
+      </div>
+      <div class="ring-wrap">
+        <svg width="92" height="92" viewBox="0 0 92 92">
+          <circle cx="46" cy="46" r="${R}" fill="none" stroke="#E0DDD7" stroke-width="5"/>
+          <circle class="rtrack" cx="46" cy="46" r="${R}" fill="none" stroke="${PC.p3}"
+            stroke-width="5" stroke-linecap="round"
+            stroke-dasharray="${C}" stroke-dashoffset="${C}"
+            transform="rotate(-90 46 46)"
+            style="transition:stroke-dashoffset .5s cubic-bezier(.4,0,.2,1)"/>
+          <text x="46" y="42" text-anchor="middle" class="rlabel"
+            style="font-family:'DM Mono',monospace;font-size:18px;fill:#0F1923;font-weight:500">0%</text>
+          <text x="46" y="54" text-anchor="middle"
+            style="font-family:'DM Mono',monospace;font-size:9px;fill:#7A7670;letter-spacing:.06em">done</text>
+        </svg>
+      </div>
+    </div>
+
+    <!-- PHASE 1 -->
+    <div class="ps">
+      ${phHd(PC.p1,'Phase 1 — Foundation Bootcamp','10–13 March 2026','tp1')}
+      <div class="slist">`;
+
+  P1.forEach(s => {
+    h += `<div class="scard" data-tid="${s.id}" id="sc${s.id}">
+      <div class="si" onclick="tickSess('${s.id}',document.getElementById('sc${s.id}'))">
+        <div class="sbadge">${s.badge}</div>
+        <div class="sinfo">
+          <div class="sdate">${s.date}</div>
+          <div class="stitle">${s.title}</div>
+        </div>
+        <div class="tc">${CHK}</div>
+      </div>
+      <div class="stopics">
+        ${s.topics.map(t => `<div class="trow">${t.b ? `<b>${t.b}</b>${t.n ? ` — ${t.n}` : ''}` : t.n}</div>`).join('')}
+        <div class="ehint">Click header to mark complete · click again to unmark</div>
+      </div>
+    </div>`;
+  });
+
+  h += `</div></div>
+
+    <!-- PHASE 2 -->
+    <div class="ps">
+      ${phHd(PC.p2,'Phase 2 — Cross-Functional Rotations','16 Mar – 24 Apr 2026','tp2')}
+      <div class="rgrid">`;
+
+  g.p2.forEach((r, i) => {
+    h += `<div class="rcard" data-tid="p2_${i}" style="--pc:${PC.p2}" onclick="tick('p2_${i}',this)">
+      <div class="rtop">
+        <div><div class="rr">${r.r} · ${r.wk}</div><div class="rdept">${r.dept}</div></div>
+        <div class="tc">${CHK}</div>
+      </div>
+      <div class="rot-tags">
+        <span class="rtag">${r.kad}</span>
+        <span class="rtag dt">${r.d}</span>
+      </div>
+    </div>`;
+  });
+
+  h += `</div></div>
+
+    <!-- PHASE 3 -->
+    <div class="ps">
+      ${phHd(PC.p3,`Phase 3 — ${g.track} KAD Rotations`,'27 Apr – 19 Jun 2026','tp3')}
+      <div class="rgrid">`;
+
+  g.p3.forEach((r, i) => {
+    h += `<div class="rcard" data-tid="p3_${i}" style="--pc:${PC.p3}" onclick="tick('p3_${i}',this)">
+      <div class="rtop">
+        <div><div class="rr">${r.r} · ${r.wk}</div><div class="rdept">${g.track} · ${r.kad}</div></div>
+        <div class="tc">${CHK}</div>
+      </div>
+      <div class="rot-tags">
+        <span class="rtag">${r.kad}</span>
+        <span class="rtag dt">${r.d}</span>
+      </div>
+    </div>`;
+  });
+
+  h += `</div></div>
+
+    <!-- FRIDAY SESSIONS -->
+    <div class="ps">
+      ${phHd(PC.fr,'Friday Learning Sessions — All Graduates','20 Mar – 19 Jun 2026 · Every Friday AM','tfr')}
+      <div class="flist">`;
+
+  FRI.forEach(f => {
+    h += `<div class="frow" data-tid="${f.id}" onclick="tick('${f.id}',this)">
+      <div class="fwk">${f.wk}</div>
+      <div class="fd">${f.d}</div>
+      <div class="ft">${f.t}</div>
+      <div class="fpm">PM · Mentor 1-on-1</div>
+      <div class="ftc">${CHK}</div>
+    </div>`;
+  });
+
+  h += `</div></div>
+
+    <!-- PHASE 4 -->
+    <div class="ps">
+      ${phHd(PC.p4,'Phase 4 — Capstone Project & Conversion','22 Jun – 17 Jul 2026','tc4')}
+      <div class="cgrid">`;
+
+  CAP.forEach(c => {
+    h += `<div class="ccard" data-tid="${c.id}" onclick="tick('${c.id}',this)">
+      <div class="ctc">${CHK}</div>
+      <div class="cwk">${c.wk}</div>
+      <div class="ctitle">${c.title}</div>
+      <div class="cdates">${c.d}</div>
+      <ul class="ctasks">${c.tasks.map(t => `<li>${t}</li>`).join('')}</ul>
+    </div>`;
+  });
+
+  h += `</div></div>
+
+    <!-- STANDING REQUIREMENTS -->
+    <div class="ps">
+      <div class="ph">
+        <div class="pp" style="background:#7A7670"></div>
+        <div class="pl">Standing Requirements — All Phases</div>
+        <div class="pr"></div>
+      </div>
+      <div class="reqs">
+        ${REQS.map(r => `<div class="req"><span class="ri">${r.i}</span><span>${r.t}</span></div>`).join('')}
+      </div>
+    </div>
+
+  </div><!-- /main -->
+
+  <div class="fbar">
+    <span class="fplbl" id="fpLabel"><strong>0</strong> of 0 done</span>
+    <div class="fptrk"><div class="fpfill" id="fpFill" style="width:0%"></div></div>
+    <button class="fpres" onclick="doReset()">Reset</button>
+  </div>`;
+
+  return h;
+}
+</script>
+
+<style>
+:root{--ink:#0F1923;--paper:#F5F3EE;--card:#fff;--bd:#E0DDD7;--mu:#7A7670;
+  --ac:#C84B1F;--p3:#1A7A4C;--dbg:#EAF7F0;--dbd:rgba(26,122,76,.22);--dtx:#1A7A4C}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:smooth}
+body{font-family:'DM Sans',sans-serif;background:var(--paper);color:var(--ink);min-height:100vh}
+body::after{content:'';position:fixed;inset:0;pointer-events:none;z-index:9999;opacity:.02;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='200' height='200' filter='url(%23n)'/%3E%3C/svg%3E");
+  background-size:180px}
+
+/* ── LOGIN ──────────────────────────────────────────────────── */
+#SL{display:flex;align-items:center;justify-content:center;min-height:100vh;padding:24px}
+#SA{display:none}
+.lbox{background:var(--card);border:1px solid var(--bd);border-radius:14px;padding:44px 40px;
+  width:100%;max-width:420px;box-shadow:0 12px 60px rgba(0,0,0,.1)}
+.llogo{font-family:'Instrument Serif',serif;font-size:28px;color:var(--ink);margin-bottom:4px}
+.llogo em{color:var(--ac);font-style:italic}
+.ltag{font-family:'DM Mono',monospace;font-size:10px;letter-spacing:.13em;text-transform:uppercase;
+  color:var(--mu);margin-bottom:32px}
+.llbl{font-size:12px;font-weight:600;display:block;margin-bottom:7px;letter-spacing:.02em}
+.linp{width:100%;padding:12px 14px;border:1.5px solid var(--bd);border-radius:8px;
+  font-family:'DM Sans',sans-serif;font-size:14px;color:var(--ink);background:var(--paper);
+  margin-bottom:16px;outline:none;transition:border-color .2s,background .2s}
+.linp:focus{border-color:var(--ac);background:#fff}
+.lbtn{width:100%;padding:14px;background:var(--ink);color:#fff;border:none;border-radius:8px;
+  font-family:'DM Sans',sans-serif;font-size:14px;font-weight:700;cursor:pointer;
+  letter-spacing:.02em;transition:background .18s;margin-top:2px}
+.lbtn:hover:not(:disabled){background:#1C2D3E}
+.lbtn:disabled{opacity:.5;cursor:not-allowed}
+#lErr{font-size:12px;color:var(--ac);min-height:18px;margin-top:10px}
+.lnote{font-size:11px;color:var(--mu);line-height:1.6;margin-top:20px;
+  padding-top:20px;border-top:1px solid var(--bd)}
+.lnote b{color:var(--ink)}
+
+/* ── TOPBAR ──────────────────────────────────────────────────── */
+.topbar{background:var(--ink);border-bottom:1px solid #1C2630;position:sticky;top:0;z-index:200}
+.tbi{max-width:1100px;margin:0 auto;padding:14px 24px;display:flex;
+  align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap}
+.brand{display:flex;align-items:baseline;gap:12px}
+.bn{font-family:'Instrument Serif',serif;font-size:20px;color:#fff}
+.bn em{color:var(--ac);font-style:italic}
+.bs{font-family:'DM Mono',monospace;font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:#4A5560}
+.tr2{display:flex;align-items:center;gap:10px}
+.ppill{font-family:'DM Mono',monospace;font-size:11px;background:rgba(26,122,76,.14);
+  border:1px solid rgba(26,122,76,.28);color:var(--p3);padding:5px 13px;
+  border-radius:100px;letter-spacing:.06em;transition:all .3s}
+.lout{font-family:'DM Sans',sans-serif;font-size:11px;color:#4A5560;background:none;
+  border:1px solid #2A3340;padding:5px 13px;border-radius:4px;cursor:pointer;transition:all .15s}
+.lout:hover{color:#fff;border-color:#556}
+
+/* ── MAIN ────────────────────────────────────────────────────── */
+.main{max-width:1100px;margin:0 auto;padding:36px 24px 110px;animation:fadeUp .28s ease both}
+@keyframes fadeUp{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
+
+/* hero */
+.hero{display:grid;grid-template-columns:1fr auto;gap:20px;align-items:start;
+  padding-bottom:28px;margin-bottom:36px;border-bottom:1px solid var(--bd)}
+.hname{font-family:'Instrument Serif',serif;font-size:44px;line-height:1;margin-bottom:10px}
+.hname em{font-style:italic;color:rgba(15,25,35,.28)}
+.hpills{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+.hp{font-family:'DM Mono',monospace;font-size:10px;letter-spacing:.1em;text-transform:uppercase;
+  padding:4px 11px;border-radius:4px;border:1px solid var(--bd)}
+.hp.trk{color:#1A4A8B;background:rgba(26,74,139,.06);border-color:rgba(26,74,139,.2)}
+.hp.kad{color:var(--ac);background:rgba(200,75,31,.06);border-color:rgba(200,75,31,.2)}
+.hp.eml{color:var(--mu);font-size:9px;text-transform:lowercase;letter-spacing:.02em}
+
+/* phase headers */
+.ps{margin-bottom:44px}
+.ph{display:flex;align-items:center;gap:10px;margin-bottom:18px}
+.pp{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+.pl{font-size:10px;font-weight:700;letter-spacing:.14em;text-transform:uppercase}
+.pd{font-family:'DM Mono',monospace;font-size:10px;color:var(--mu);letter-spacing:.05em}
+.pr{flex:1;height:1px;background:var(--bd)}
+.pt{font-family:'DM Mono',monospace;font-size:10px;color:var(--mu);white-space:nowrap}
+
+/* shared tick circle */
+.tc,.ftc,.ctc{border-radius:50%;border:2px solid var(--bd);display:flex;
+  align-items:center;justify-content:center;flex-shrink:0;transition:all .22s;background:#fff}
+.tc{width:24px;height:24px}
+.ftc,.ctc{width:20px;height:20px}
+.tc svg,.ftc svg,.ctc svg{opacity:0;transform:scale(.4);transition:all .22s}
+.done .tc,.done .ftc,.done .ctc{background:var(--p3) !important;border-color:var(--p3) !important}
+.done .tc svg,.done .ftc svg,.done .ctc svg{opacity:1 !important;transform:scale(1) !important}
+
+/* session cards */
+.slist{display:grid;gap:8px}
+.scard{background:var(--card);border:1px solid var(--bd);border-radius:10px;
+  overflow:hidden;cursor:pointer;transition:border-color .2s,box-shadow .2s}
+.scard:hover{box-shadow:0 3px 14px rgba(0,0,0,.07)}
+.scard.done{background:var(--dbg);border-color:var(--dbd)}
+.si{display:flex;align-items:center;gap:14px;padding:15px 18px}
+.sbadge{font-family:'DM Mono',monospace;font-size:10px;font-weight:500;color:var(--ac);
+  background:rgba(200,75,31,.09);padding:4px 9px;border-radius:4px;white-space:nowrap;flex-shrink:0}
+.sinfo{flex:1;min-width:0}
+.sdate{font-family:'DM Mono',monospace;font-size:9px;letter-spacing:.1em;text-transform:uppercase;
+  color:var(--mu);margin-bottom:2px}
+.stitle{font-size:14px;font-weight:600}
+.scard.done .stitle{color:var(--dtx)}
+.stopics{display:none;padding:0 18px 14px;border-top:1px dashed var(--bd)}
+.scard._open .stopics{display:block}
+.trow{font-size:12px;color:var(--mu);padding:4px 0;line-height:1.5}
+.trow+.trow{border-top:1px dashed #ECEAE4}
+.trow b{color:var(--ink);font-weight:600}
+.ehint{font-family:'DM Mono',monospace;font-size:9px;color:var(--mu);margin-top:8px;opacity:.6}
+
+/* rotation cards */
+.rgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(255px,1fr));gap:12px}
+.rcard{background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:18px;
+  cursor:pointer;transition:all .2s;position:relative;overflow:hidden;user-select:none}
+.rcard::before{content:'';position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--pc,var(--bd))}
+.rcard:hover{box-shadow:0 4px 16px rgba(0,0,0,.07);transform:translateY(-1px)}
+.rcard.done{background:var(--dbg);border-color:var(--dbd)}
+.rcard.done::before{background:var(--p3)}
+.rtop{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px}
+.rr{font-family:'DM Mono',monospace;font-size:10px;color:var(--mu);letter-spacing:.08em;margin-bottom:3px}
+.rdept{font-size:15px;font-weight:700}
+.rcard.done .rdept{color:var(--dtx)}
+.rot-tags{display:flex;gap:6px;flex-wrap:wrap}
+.rtag{font-family:'DM Mono',monospace;font-size:10px;padding:2px 8px;border-radius:3px;
+  background:rgba(200,75,31,.08);color:var(--ac)}
+.rtag.dt{background:#F0EDE6;color:var(--mu)}
+.rtag.done-tag{background:var(--dbg);color:var(--dtx)}
+
+/* friday rows */
+.flist{display:grid;gap:7px}
+.frow{background:var(--card);border:1px solid var(--bd);border-radius:8px;
+  padding:11px 16px;display:flex;align-items:center;gap:13px;
+  cursor:pointer;transition:all .18s;user-select:none}
+.frow:hover{border-color:#C8C4BC;transform:translateX(2px)}
+.frow.done{background:var(--dbg);border-color:var(--dbd)}
+.fwk{font-family:'DM Mono',monospace;font-size:10px;color:var(--mu);width:44px;text-align:center;flex-shrink:0}
+.fd{font-family:'DM Mono',monospace;font-size:10px;background:rgba(139,106,26,.08);
+  color:#8B6A1A;padding:2px 8px;border-radius:3px;white-space:nowrap;flex-shrink:0}
+.fpm{font-family:'DM Mono',monospace;font-size:9px;color:var(--mu);white-space:nowrap;flex-shrink:0}
+.ft{font-size:13px;font-weight:600;flex:1}
+.frow.done .ft{color:var(--dtx)}
+
+/* capstone */
+.cgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:12px}
+.ccard{background:var(--card);border:1px solid var(--bd);border-radius:10px;
+  padding:18px 18px 16px;cursor:pointer;transition:all .2s;position:relative;user-select:none}
+.ccard:hover{box-shadow:0 4px 16px rgba(0,0,0,.07);transform:translateY(-1px)}
+.ccard.done{background:var(--dbg);border-color:var(--dbd)}
+.ctc{position:absolute;top:14px;right:14px;width:22px !important;height:22px !important}
+.cwk{font-family:'DM Mono',monospace;font-size:10px;color:#6B3A8B;margin-bottom:4px}
+.ctitle{font-size:14px;font-weight:700;padding-right:28px;margin-bottom:4px}
+.ccard.done .ctitle{color:var(--dtx)}
+.cdates{font-family:'DM Mono',monospace;font-size:10px;color:var(--mu);margin-bottom:10px}
+.ctasks{list-style:none;display:grid;gap:3px}
+.ctasks li{font-size:11px;color:var(--mu);padding-left:10px;position:relative;line-height:1.4}
+.ctasks li::before{content:'·';position:absolute;left:0;color:#6B3A8B}
+.ccard.done .ctasks li::before{color:var(--p3)}
+
+/* requirements */
+.reqs{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:9px}
+.req{background:var(--card);border:1px solid var(--bd);border-radius:8px;
+  padding:11px 14px;display:flex;gap:10px;font-size:12px;line-height:1.5}
+.ri{font-size:15px;flex-shrink:0;margin-top:1px}
+
+/* footer bar */
+.fbar{position:fixed;bottom:0;left:0;right:0;background:var(--ink);
+  border-top:1px solid #1C2630;padding:10px 24px;display:flex;align-items:center;gap:16px;z-index:100}
+.fplbl{font-family:'DM Mono',monospace;font-size:11px;color:#4A5560;white-space:nowrap}
+.fplbl strong{color:var(--p3)}
+.fptrk{flex:1;height:3px;background:#1C2630;border-radius:2px;overflow:hidden}
+.fpfill{height:100%;background:var(--p3);border-radius:2px;transition:width .4s cubic-bezier(.4,0,.2,1)}
+.fpres{font-family:'DM Sans',sans-serif;font-size:11px;color:#4A5560;background:none;
+  border:1px solid #2A3340;padding:4px 12px;border-radius:4px;cursor:pointer;transition:all .15s}
+.fpres:hover{color:#fff;border-color:#444}
+
+/* animations */
+@keyframes pop{0%{transform:scale(.5)}60%{transform:scale(1.3)}100%{transform:scale(1)}}
+._pop .tc,._pop .ftc,._pop .ctc{animation:pop .3s ease both}
+
+/* responsive */
+@media(max-width:640px){
+  .hname{font-size:30px}.hero{grid-template-columns:1fr}.ring-wrap{display:none}
+  .rgrid,.cgrid{grid-template-columns:1fr}.fpm{display:none}
+  .lbox{padding:32px 24px}
+}
+</style>
+</head>
+<body>
+
+<!-- Login screen -->
+<div id="SL">
+  <div class="lbox">
+    <div class="llogo">Teli<em>nno</em> GMP</div>
+    <div class="ltag">Graduate Management Programme · 2026</div>
+    <label class="llbl" for="iEmail">Work email address</label>
+    <input class="linp" id="iEmail" type="email"
+      placeholder="yourname@telinnoconsulting.com" autocomplete="email">
+    <label class="llbl" for="iPass">Password</label>
+    <input class="linp" id="iPass" type="password"
+      placeholder="Enter your password" autocomplete="current-password">
+    <button class="lbtn" id="lBtn" onclick="doLogin()">Sign In</button>
+    <div id="lErr"></div>
+    <div class="lnote">
+      Your progress is saved to the cloud and syncs across all your devices.<br><br>
+      <b>Forgot your password?</b> Contact your programme coordinator.
+    </div>
+  </div>
+</div>
+
+<!-- App screen — populated by JS after auth -->
+<div id="SA"></div>
+
+</body>
+</html>
