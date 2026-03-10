@@ -1,0 +1,557 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Telinno GMP — Programme Dashboard</title>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=DM+Sans:wght@300;400;500;600;700&family=DM+Mono:wght@300;400;500&display=swap" rel="stylesheet">
+
+<script type="module">
+import { initializeApp }
+  from "https://www.gstatic.com/firebasejs/12.10.0/firebase-app.js";
+import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged }
+  from "https://www.gstatic.com/firebasejs/12.10.0/firebase-auth.js";
+import { getFirestore, collection, onSnapshot }
+  from "https://www.gstatic.com/firebasejs/12.10.0/firebase-firestore.js";
+
+const firebaseConfig = {
+  apiKey:            "AIzaSyA33K57poDBb_avpiZofEetwmVfjZl5TIE",
+  authDomain:        "telinnogmp.firebaseapp.com",
+  projectId:         "telinnogmp",
+  storageBucket:     "telinnogmp.firebasestorage.app",
+  messagingSenderId: "462011583361",
+  appId:             "1:462011583361:web:a37469e4ff4466eb3b7680",
+  measurementId:     "G-4SYMHDPFLG"
+};
+
+/* CEO email — add more if needed */
+const CEO_EMAILS = ["ceo@telinnoconsulting.com"];
+
+const GRAD_EMAILS = {
+  "akintomiwa": "awoyomi.akintomiwa@telinnoconsulting.com",
+  "ahmed":      "ahmed.olaitan@telinnoconsulting.com",
+  "samuel":     "samuel.mauyon@telinnoconsulting.com",
+  "adegboye":   "adegboye.adeola@telinnoconsulting.com",
+  "ebube":      "ebubechukwu.peace@telinnoconsulting.com",
+  "yunus":      "salim.yunus@telinnoconsulting.com"
+};
+
+/* ── Programme structure ─────────────────────────────────── */
+const GRADS_META = [
+  { id:'ebube',      name:'Ebubechukwu Peace',  first:'Ebubechukwu', track:'Procurement',        kad:'KAD 4',
+    p2:['p2_0','p2_1','p2_2'], p3:['p3_0','p3_1','p3_2','p3_3'] },
+  { id:'yunus',      name:'Salim Yunus',         first:'Salim',       track:'Sales/Commercial',   kad:'KAD 4',
+    p2:['p2_0','p2_1','p2_2'], p3:['p3_0','p3_1','p3_2','p3_3'] },
+  { id:'adegboye',   name:'Adegboye Adeola',     first:'Adegboye',    track:'Sales/Commercial',   kad:'KAD 2',
+    p2:['p2_0','p2_1','p2_2'], p3:['p3_0','p3_1','p3_2','p3_3'] },
+  { id:'akintomiwa', name:'Akintomiwa Awoyomi',  first:'Akintomiwa',  track:'HR',                 kad:'KAD 3',
+    p2:['p2_0','p2_1','p2_2'], p3:['p3_0','p3_1','p3_2','p3_3'] },
+  { id:'ahmed',      name:'Ahmed Olaitan',       first:'Ahmed',       track:'Project Management', kad:'KAD 1',
+    p2:['p2_0','p2_1','p2_2'], p3:['p3_0','p3_1','p3_2','p3_3'] },
+  { id:'samuel',     name:'Samuel Mauyon',       first:'Samuel',       track:'Project Management', kad:'KAD 2',
+    p2:['p2_0','p2_1','p2_2'], p3:['p3_0','p3_1','p3_2','p3_3'] },
+];
+
+const P1_IDS  = ['s1','s2','s3','s4'];
+const FRI_IDS = ['f5','f6','f7','f8','f9','f10','f11','f12','f13','f14','f15','f16','f17','f18'];
+const CAP_IDS = ['c19','c20','c21','c22'];
+
+const PHASE_LABELS = {
+  p1: 'Phase 1 — Bootcamp',
+  p2: 'Phase 2 — Cross-Functional',
+  p3: 'Phase 3 — KAD Rotations',
+  fri:'Friday Sessions',
+  cap:'Phase 4 — Capstone',
+};
+
+function phaseBreakdown(ticks, grad) {
+  const p1  = P1_IDS.filter(id => ticks[id]).length;
+  const p2  = grad.p2.filter(id => ticks[id]).length;
+  const p3  = grad.p3.filter(id => ticks[id]).length;
+  const fri = FRI_IDS.filter(id => ticks[id]).length;
+  const cap = CAP_IDS.filter(id => ticks[id]).length;
+  const total = P1_IDS.length + grad.p2.length + grad.p3.length + FRI_IDS.length + CAP_IDS.length;
+  const done  = p1 + p2 + p3 + fri + cap;
+  return { p1, p2, p3, fri, cap,
+           p1t:P1_IDS.length, p2t:grad.p2.length, p3t:grad.p3.length,
+           frit:FRI_IDS.length, capt:CAP_IDS.length,
+           total, done, pct: total ? Math.round(done/total*100) : 0 };
+}
+
+/* ── Firebase init ────────────────────────────────────────── */
+const app  = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db   = getFirestore(app);
+
+let _unsubscribe = null;
+let _allTicks    = {};  // { gradId: { tickId: bool } }
+
+/* ── Auth ─────────────────────────────────────────────────── */
+onAuthStateChanged(auth, user => {
+  if (user) {
+    /* Allow CEO emails AND grad emails (so grads can't accidentally land here) */
+    const isCEO = CEO_EMAILS.includes(user.email);
+    const isGrad = Object.values(GRAD_EMAILS).includes(user.email);
+    if (!isCEO && !isGrad) { signOut(auth); showLogin("This account doesn't have access."); return; }
+    if (isGrad && !isCEO) { showLogin("This dashboard is for programme coordinators only. Please use the graduate tracker."); signOut(auth); return; }
+    showDashboard(user.email);
+    startListen();
+  } else {
+    if (_unsubscribe) { _unsubscribe(); _unsubscribe = null; }
+    showLogin();
+  }
+});
+
+window.doLogin = async () => {
+  const email = document.getElementById('iEmail').value.trim();
+  const pass  = document.getElementById('iPass').value;
+  const errEl = document.getElementById('lErr');
+  const btn   = document.getElementById('lBtn');
+  errEl.textContent = ''; btn.disabled = true; btn.textContent = 'Signing in…';
+  try { await signInWithEmailAndPassword(auth, email, pass); }
+  catch(e) {
+    const m = { 'auth/invalid-credential':'Incorrect email or password.',
+                'auth/too-many-requests':'Too many attempts — try again later.',
+                'auth/invalid-email':'Please enter a valid email address.' };
+    errEl.textContent = m[e.code] || 'Sign-in failed. Please try again.';
+    btn.disabled = false; btn.textContent = 'Sign In';
+  }
+};
+window.doLogout = () => signOut(auth);
+
+/* ── Live Firestore listener (all grads at once) ─────────── */
+function startListen() {
+  if (_unsubscribe) _unsubscribe();
+  _unsubscribe = onSnapshot(collection(db, 'progress'), snapshot => {
+    snapshot.forEach(doc => { _allTicks[doc.id] = doc.data().ticks || {}; });
+    renderAll();
+  });
+}
+
+/* ── Show / hide screens ──────────────────────────────────── */
+function showLogin(err) {
+  document.getElementById('SL').style.display = 'flex';
+  document.getElementById('SA').style.display = 'none';
+  if (err) document.getElementById('lErr').textContent = err;
+  setTimeout(() => {
+    const p = document.getElementById('iPass');
+    const e = document.getElementById('iEmail');
+    if (p) p.onkeydown = ev => { if (ev.key==='Enter') window.doLogin(); };
+    if (e) e.onkeydown = ev => { if (ev.key==='Enter') p && p.focus(); };
+  }, 60);
+}
+
+function showDashboard(email) {
+  document.getElementById('SL').style.display = 'none';
+  document.getElementById('SA').style.display = 'block';
+  document.getElementById('ceoEmail').textContent = email;
+  document.getElementById('lastUpdated').textContent = 'Connecting to live data…';
+}
+
+/* ── Render everything ────────────────────────────────────── */
+function renderAll() {
+  const now = new Date().toLocaleTimeString('en-GB', {hour:'2-digit',minute:'2-digit',second:'2-digit'});
+  document.getElementById('lastUpdated').textContent = `Live · last updated ${now}`;
+
+  const breakdowns = GRADS_META.map(g => ({
+    ...g,
+    ticks: _allTicks[g.id] || {},
+    bd: phaseBreakdown(_allTicks[g.id] || {}, g)
+  }));
+
+  renderCohortStats(breakdowns);
+  renderPhaseMatrix(breakdowns);
+  renderGradCards(breakdowns);
+}
+
+/* ── Cohort-level stats ───────────────────────────────────── */
+function renderCohortStats(bds) {
+  const avgPct = Math.round(bds.reduce((s,b) => s + b.bd.pct, 0) / bds.length);
+  const totalItems = bds[0].bd.total;
+  const totalDone  = bds.reduce((s,b) => s + b.bd.done, 0);
+  const maxPossible = totalItems * bds.length;
+
+  document.getElementById('statAvg').textContent    = avgPct + '%';
+  document.getElementById('statItems').textContent  = totalDone + ' / ' + maxPossible;
+  document.getElementById('statAhead').textContent  = bds.filter(b => b.bd.pct >= 50).length;
+  document.getElementById('statBehind').textContent = bds.filter(b => b.bd.pct < 25).length;
+
+  // Cohort progress bar
+  const fill = document.getElementById('cohortFill');
+  if (fill) { fill.style.width = avgPct + '%'; }
+  const lbl = document.getElementById('cohortPct');
+  if (lbl) lbl.textContent = avgPct + '%';
+}
+
+/* ── Phase completion matrix ──────────────────────────────── */
+function renderPhaseMatrix(bds) {
+  const phases = [
+    {key:'p1',  label:'Phase 1',  kt:'p1t'},
+    {key:'p2',  label:'Phase 2',  kt:'p2t'},
+    {key:'p3',  label:'Phase 3',  kt:'p3t'},
+    {key:'fri', label:'Fridays',  kt:'frit'},
+    {key:'cap', label:'Capstone', kt:'capt'},
+  ];
+
+  let rows = '';
+  bds.forEach(b => {
+    rows += `<tr>
+      <td class="mat-name">${b.first}</td>
+      ${phases.map(p => {
+        const done = b.bd[p.key], total = b.bd[p.kt];
+        const pct  = total ? Math.round(done/total*100) : 0;
+        const cls  = pct === 100 ? 'full' : pct >= 50 ? 'half' : pct > 0 ? 'started' : 'none';
+        return `<td class="mat-cell">
+          <div class="mat-bar-wrap">
+            <div class="mat-bar ${cls}" style="width:${pct}%"></div>
+          </div>
+          <div class="mat-num">${done}/${total}</div>
+        </td>`;
+      }).join('')}
+      <td class="mat-total">
+        <div class="mat-pct-pill ${b.bd.pct===100?'done':b.bd.pct>=50?'mid':b.bd.pct>0?'low':'zero'}">
+          ${b.bd.pct}%
+        </div>
+      </td>
+    </tr>`;
+  });
+
+  document.getElementById('matrixBody').innerHTML = rows;
+}
+
+/* ── Individual grad cards ────────────────────────────────── */
+function renderGradCards(bds) {
+  const container = document.getElementById('gradCards');
+  container.innerHTML = bds.map(b => {
+    const { bd } = b;
+    const R = 30, C = (2*Math.PI*R).toFixed(2);
+    const offset = (C - (bd.pct/100)*C).toFixed(2);
+    const statusCls = bd.pct === 100 ? 'status-done' : bd.pct >= 50 ? 'status-mid' : bd.pct > 0 ? 'status-low' : 'status-zero';
+    const statusTxt = bd.pct === 100 ? 'Complete' : bd.pct >= 75 ? 'On track' : bd.pct >= 25 ? 'In progress' : bd.done > 0 ? 'Just started' : 'Not started';
+
+    const phases = [
+      { label:'P1 Bootcamp',   done:bd.p1,  total:bd.p1t,  col:'#C84B1F' },
+      { label:'P2 Cross-func', done:bd.p2,  total:bd.p2t,  col:'#1A4A8B' },
+      { label:'P3 KAD Rots',   done:bd.p3,  total:bd.p3t,  col:'#1A7A4C' },
+      { label:'Fridays',       done:bd.fri, total:bd.frit, col:'#8B6A1A' },
+      { label:'Capstone',      done:bd.cap, total:bd.capt, col:'#6B3A8B' },
+    ];
+
+    return `<div class="gcard">
+      <div class="gcard-top">
+        <div class="gcard-left">
+          <div class="gcard-name">${b.first} <span>${b.name.split(' ').slice(1).join(' ')}</span></div>
+          <div class="gcard-meta">
+            <span class="gmeta trk">${b.track}</span>
+            <span class="gmeta kad">${b.kad}</span>
+          </div>
+          <div class="gcard-status ${statusCls}">${statusTxt}</div>
+        </div>
+        <div class="gcard-ring">
+          <svg width="72" height="72" viewBox="0 0 72 72">
+            <circle cx="36" cy="36" r="${R}" fill="none" stroke="#E0DDD7" stroke-width="4"/>
+            <circle cx="36" cy="36" r="${R}" fill="none" stroke="${bd.pct>0?'#1A7A4C':'#E0DDD7'}"
+              stroke-width="4" stroke-linecap="round"
+              stroke-dasharray="${C}" stroke-dashoffset="${offset}"
+              transform="rotate(-90 36 36)"
+              style="transition:stroke-dashoffset .6s cubic-bezier(.4,0,.2,1)"/>
+            <text x="36" y="33" text-anchor="middle"
+              style="font-family:'DM Mono',monospace;font-size:14px;fill:#0F1923;font-weight:500">${bd.pct}%</text>
+            <text x="36" y="44" text-anchor="middle"
+              style="font-family:'DM Mono',monospace;font-size:8px;fill:#7A7670">${bd.done}/${bd.total}</text>
+          </svg>
+        </div>
+      </div>
+      <div class="gcard-phases">
+        ${phases.map(ph => {
+          const p = ph.total ? Math.round(ph.done/ph.total*100) : 0;
+          return `<div class="gph">
+            <div class="gph-label">${ph.label}</div>
+            <div class="gph-bar-wrap">
+              <div class="gph-bar" style="width:${p}%;background:${ph.col}"></div>
+            </div>
+            <div class="gph-num">${ph.done}/${ph.total}</div>
+          </div>`;
+        }).join('')}
+      </div>
+    </div>`;
+  }).join('');
+}
+</script>
+
+<style>
+:root{--ink:#0F1923;--paper:#F5F3EE;--card:#fff;--bd:#E0DDD7;--mu:#7A7670;
+  --ac:#C84B1F;--p3:#1A7A4C;--dbg:#EAF7F0}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:smooth}
+body{font-family:'DM Sans',sans-serif;background:var(--paper);color:var(--ink);min-height:100vh}
+body::after{content:'';position:fixed;inset:0;pointer-events:none;z-index:9999;opacity:.018;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='200' height='200' filter='url(%23n)'/%3E%3C/svg%3E");
+  background-size:180px}
+
+/* ── LOGIN ──────────────────────────────────────────────────── */
+#SL{display:flex;align-items:center;justify-content:center;min-height:100vh;padding:24px}
+#SA{display:none}
+.lbox{background:var(--card);border:1px solid var(--bd);border-radius:14px;padding:44px 40px;
+  width:100%;max-width:420px;box-shadow:0 12px 60px rgba(0,0,0,.1)}
+.llogo{font-family:'Instrument Serif',serif;font-size:28px;color:var(--ink);margin-bottom:4px}
+.llogo em{color:var(--ac);font-style:italic}
+.ltag{font-family:'DM Mono',monospace;font-size:10px;letter-spacing:.13em;text-transform:uppercase;
+  color:var(--mu);margin-bottom:8px}
+.lsubtag{font-size:12px;color:var(--mu);margin-bottom:28px;line-height:1.5}
+.llbl{font-size:12px;font-weight:600;display:block;margin-bottom:7px;letter-spacing:.02em}
+.linp{width:100%;padding:12px 14px;border:1.5px solid var(--bd);border-radius:8px;
+  font-family:'DM Sans',sans-serif;font-size:14px;color:var(--ink);background:var(--paper);
+  margin-bottom:16px;outline:none;transition:border-color .2s,background .2s}
+.linp:focus{border-color:var(--ac);background:#fff}
+.lbtn{width:100%;padding:14px;background:var(--ink);color:#fff;border:none;border-radius:8px;
+  font-family:'DM Sans',sans-serif;font-size:14px;font-weight:700;cursor:pointer;
+  letter-spacing:.02em;transition:background .18s}
+.lbtn:hover:not(:disabled){background:#1C2D3E}
+.lbtn:disabled{opacity:.5;cursor:not-allowed}
+#lErr{font-size:12px;color:var(--ac);min-height:18px;margin-top:10px}
+
+/* ── TOPBAR ──────────────────────────────────────────────────── */
+.topbar{background:var(--ink);border-bottom:1px solid #1C2630;position:sticky;top:0;z-index:200}
+.tbi{max-width:1200px;margin:0 auto;padding:14px 24px;display:flex;
+  align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap}
+.brand{display:flex;align-items:baseline;gap:12px}
+.bn{font-family:'Instrument Serif',serif;font-size:20px;color:#fff}
+.bn em{color:var(--ac);font-style:italic}
+.bs{font-family:'DM Mono',monospace;font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:#4A5560}
+.tr2{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.live-dot{display:flex;align-items:center;gap:6px;font-family:'DM Mono',monospace;font-size:10px;color:#4A5560}
+.live-dot::before{content:'';width:6px;height:6px;border-radius:50%;background:var(--p3);
+  box-shadow:0 0 0 0 rgba(26,122,76,.4);animation:pulse 2s infinite}
+@keyframes pulse{0%{box-shadow:0 0 0 0 rgba(26,122,76,.4)}70%{box-shadow:0 0 0 6px rgba(26,122,76,0)}100%{box-shadow:0 0 0 0 rgba(26,122,76,0)}}
+.ceo-pill{font-family:'DM Mono',monospace;font-size:10px;color:#4A5560;
+  background:rgba(255,255,255,.05);border:1px solid #2A3340;padding:4px 10px;border-radius:4px}
+.lout{font-family:'DM Sans',sans-serif;font-size:11px;color:#4A5560;background:none;
+  border:1px solid #2A3340;padding:5px 13px;border-radius:4px;cursor:pointer;transition:all .15s}
+.lout:hover{color:#fff;border-color:#556}
+
+/* ── MAIN ────────────────────────────────────────────────────── */
+.main{max-width:1200px;margin:0 auto;padding:36px 24px 60px;animation:fadeUp .3s ease both}
+@keyframes fadeUp{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
+
+/* ── PAGE HEADER ─────────────────────────────────────────────── */
+.page-header{margin-bottom:36px;padding-bottom:24px;border-bottom:1px solid var(--bd)}
+.page-title{font-family:'Instrument Serif',serif;font-size:36px;line-height:1;margin-bottom:8px}
+.page-title em{font-style:italic;color:rgba(15,25,35,.3)}
+.page-sub{font-family:'DM Mono',monospace;font-size:10px;color:var(--mu);letter-spacing:.08em}
+
+/* ── SECTION HEADERS ─────────────────────────────────────────── */
+.sec-head{display:flex;align-items:center;gap:10px;margin-bottom:18px}
+.sec-pip{width:8px;height:8px;border-radius:50%;background:var(--ac);flex-shrink:0}
+.sec-label{font-size:10px;font-weight:700;letter-spacing:.14em;text-transform:uppercase}
+.sec-rule{flex:1;height:1px;background:var(--bd)}
+
+/* ── COHORT STAT CARDS ───────────────────────────────────────── */
+.stats-row{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px;margin-bottom:40px}
+.stat-card{background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:20px 22px}
+.stat-label{font-family:'DM Mono',monospace;font-size:9px;letter-spacing:.12em;text-transform:uppercase;
+  color:var(--mu);margin-bottom:8px}
+.stat-value{font-family:'Instrument Serif',serif;font-size:36px;line-height:1;color:var(--ink)}
+.stat-sub{font-size:11px;color:var(--mu);margin-top:4px}
+
+/* cohort progress bar card */
+.stat-card.wide{grid-column:1/-1}
+.cohort-bar-wrap{height:10px;background:#F0EDE6;border-radius:5px;overflow:hidden;margin:10px 0 6px}
+.cohort-bar-fill{height:100%;background:var(--p3);border-radius:5px;
+  transition:width .6s cubic-bezier(.4,0,.2,1)}
+.cohort-bar-labels{display:flex;justify-content:space-between;
+  font-family:'DM Mono',monospace;font-size:9px;color:var(--mu)}
+
+/* ── PHASE MATRIX ────────────────────────────────────────────── */
+.matrix-wrap{background:var(--card);border:1px solid var(--bd);border-radius:10px;
+  overflow:auto;margin-bottom:40px}
+.matrix-table{width:100%;border-collapse:collapse}
+.matrix-table th{font-family:'DM Mono',monospace;font-size:9px;letter-spacing:.1em;
+  text-transform:uppercase;color:var(--mu);padding:14px 16px;text-align:left;
+  border-bottom:1px solid var(--bd);white-space:nowrap;background:var(--card)}
+.matrix-table th:not(:first-child){text-align:center}
+.mat-name{font-size:13px;font-weight:600;padding:14px 16px;white-space:nowrap;
+  border-bottom:1px solid #F5F3EE}
+.mat-cell{padding:10px 16px;border-bottom:1px solid #F5F3EE;text-align:center;min-width:100px}
+.mat-bar-wrap{height:5px;background:#F0EDE6;border-radius:3px;overflow:hidden;margin-bottom:4px}
+.mat-bar{height:100%;border-radius:3px;transition:width .5s ease}
+.mat-bar.full   {background:var(--p3)}
+.mat-bar.half   {background:#1A4A8B}
+.mat-bar.started{background:var(--ac)}
+.mat-bar.none   {background:transparent}
+.mat-num{font-family:'DM Mono',monospace;font-size:10px;color:var(--mu)}
+.mat-total{padding:10px 16px;border-bottom:1px solid #F5F3EE;text-align:center}
+.mat-pct-pill{font-family:'DM Mono',monospace;font-size:11px;font-weight:500;
+  padding:3px 10px;border-radius:20px;display:inline-block;white-space:nowrap}
+.mat-pct-pill.done{background:var(--dbg);color:var(--p3)}
+.mat-pct-pill.mid {background:rgba(26,74,139,.08);color:#1A4A8B}
+.mat-pct-pill.low {background:rgba(200,75,31,.08);color:var(--ac)}
+.mat-pct-pill.zero{background:#F0EDE6;color:var(--mu)}
+.matrix-table tr:last-child .mat-name,
+.matrix-table tr:last-child .mat-cell,
+.matrix-table tr:last-child .mat-total{border-bottom:none}
+
+/* ── GRAD CARDS ──────────────────────────────────────────────── */
+.grad-cards-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:16px}
+.gcard{background:var(--card);border:1px solid var(--bd);border-radius:12px;
+  padding:20px;transition:box-shadow .2s}
+.gcard:hover{box-shadow:0 4px 20px rgba(0,0,0,.07)}
+.gcard-top{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:18px}
+.gcard-name{font-family:'Instrument Serif',serif;font-size:22px;line-height:1.1;margin-bottom:8px}
+.gcard-name span{opacity:.35;font-style:italic}
+.gcard-meta{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px}
+.gmeta{font-family:'DM Mono',monospace;font-size:9px;letter-spacing:.09em;text-transform:uppercase;
+  padding:3px 8px;border-radius:3px;border:1px solid var(--bd)}
+.gmeta.trk{color:#1A4A8B;background:rgba(26,74,139,.06);border-color:rgba(26,74,139,.2)}
+.gmeta.kad{color:var(--ac);background:rgba(200,75,31,.06);border-color:rgba(200,75,31,.2)}
+.gcard-status{font-family:'DM Mono',monospace;font-size:10px;font-weight:500;
+  padding:4px 10px;border-radius:20px;display:inline-block;letter-spacing:.06em}
+.status-done{background:var(--dbg);color:var(--p3)}
+.status-mid {background:rgba(26,74,139,.08);color:#1A4A8B}
+.status-low {background:rgba(200,75,31,.08);color:var(--ac)}
+.status-zero{background:#F0EDE6;color:var(--mu)}
+
+.gcard-phases{display:grid;gap:7px}
+.gph{display:grid;grid-template-columns:90px 1fr 36px;align-items:center;gap:8px}
+.gph-label{font-family:'DM Mono',monospace;font-size:9px;color:var(--mu);
+  letter-spacing:.06em;white-space:nowrap}
+.gph-bar-wrap{height:5px;background:#F0EDE6;border-radius:3px;overflow:hidden}
+.gph-bar{height:100%;border-radius:3px;transition:width .5s ease;min-width:0}
+.gph-num{font-family:'DM Mono',monospace;font-size:9px;color:var(--mu);text-align:right}
+
+/* ── RESPONSIVE ─────────────────────────────────────────────── */
+@media(max-width:700px){
+  .grad-cards-grid{grid-template-columns:1fr}
+  .stats-row{grid-template-columns:1fr 1fr}
+  .page-title{font-size:28px}
+  .lbox{padding:32px 24px}
+  .mat-cell,.mat-total{min-width:80px}
+}
+</style>
+</head>
+<body>
+
+<!-- Login -->
+<div id="SL">
+  <div class="lbox">
+    <div class="llogo">Teli<em>nno</em> GMP</div>
+    <div class="ltag">Programme Dashboard</div>
+    <div class="lsubtag">Coordinator & executive access only.<br>Sign in with your Telinno account.</div>
+    <label class="llbl" for="iEmail">Email address</label>
+    <input class="linp" id="iEmail" type="email"
+      placeholder="you@telinnoconsulting.com" autocomplete="email">
+    <label class="llbl" for="iPass">Password</label>
+    <input class="linp" id="iPass" type="password"
+      placeholder="Enter your password" autocomplete="current-password">
+    <button class="lbtn" id="lBtn" onclick="doLogin()">Sign In</button>
+    <div id="lErr"></div>
+  </div>
+</div>
+
+<!-- Dashboard -->
+<div id="SA">
+  <header class="topbar">
+    <div class="tbi">
+      <div class="brand">
+        <div class="bn">Teli<em>nno</em> GMP</div>
+        <div class="bs">Programme Dashboard · 2026</div>
+      </div>
+      <div class="tr2">
+        <div class="live-dot" id="lastUpdated">Connecting…</div>
+        <div class="ceo-pill" id="ceoEmail"></div>
+        <button class="lout" onclick="doLogout()">Sign out</button>
+      </div>
+    </div>
+  </header>
+
+  <div class="main">
+
+    <!-- Page header -->
+    <div class="page-header">
+      <div class="page-title">Cohort <em>Overview</em></div>
+      <div class="page-sub">GMP 2026 · 6 graduates · March – July · Real-time progress</div>
+    </div>
+
+    <!-- Cohort stats -->
+    <div class="sec-head">
+      <div class="sec-pip" style="background:#1A7A4C"></div>
+      <div class="sec-label">Cohort Summary</div>
+      <div class="sec-rule"></div>
+    </div>
+    <div class="stats-row">
+      <div class="stat-card">
+        <div class="stat-label">Average Completion</div>
+        <div class="stat-value" id="statAvg">—</div>
+        <div class="stat-sub">across all graduates</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Items Completed</div>
+        <div class="stat-value" id="statItems" style="font-size:28px;margin-top:4px">—</div>
+        <div class="stat-sub">total ticks cohort-wide</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">≥ 50% Complete</div>
+        <div class="stat-value" id="statAhead">—</div>
+        <div class="stat-sub">graduates on track</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Below 25%</div>
+        <div class="stat-value" id="statBehind">—</div>
+        <div class="stat-sub">may need follow-up</div>
+      </div>
+      <div class="stat-card wide">
+        <div class="stat-label">Cohort Progress</div>
+        <div class="cohort-bar-wrap">
+          <div class="cohort-bar-fill" id="cohortFill" style="width:0%"></div>
+        </div>
+        <div class="cohort-bar-labels">
+          <span>0%</span>
+          <span id="cohortPct" style="color:var(--p3);font-weight:500">—</span>
+          <span>100%</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Phase matrix -->
+    <div class="sec-head">
+      <div class="sec-pip" style="background:#1A4A8B"></div>
+      <div class="sec-label">Phase Breakdown — All Graduates</div>
+      <div class="sec-rule"></div>
+    </div>
+    <div class="matrix-wrap" style="margin-bottom:40px">
+      <table class="matrix-table">
+        <thead>
+          <tr>
+            <th>Graduate</th>
+            <th>Phase 1 · Bootcamp</th>
+            <th>Phase 2 · Cross-Func</th>
+            <th>Phase 3 · KAD Rots</th>
+            <th>Friday Sessions</th>
+            <th>Phase 4 · Capstone</th>
+            <th>Overall</th>
+          </tr>
+        </thead>
+        <tbody id="matrixBody">
+          <tr><td colspan="7" style="padding:24px;text-align:center;
+            font-family:'DM Mono',monospace;font-size:11px;color:#7A7670">
+            Loading live data…
+          </td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Individual cards -->
+    <div class="sec-head">
+      <div class="sec-pip" style="background:#C84B1F"></div>
+      <div class="sec-label">Individual Progress</div>
+      <div class="sec-rule"></div>
+    </div>
+    <div class="grad-cards-grid" id="gradCards">
+      <!-- populated by JS -->
+    </div>
+
+  </div><!-- /main -->
+</div>
+
+</body>
+</html>
